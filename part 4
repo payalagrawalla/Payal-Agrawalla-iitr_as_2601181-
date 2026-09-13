@@ -1,0 +1,159 @@
+import time
+import hashlib
+from typing import Dict, Any, Optional
+from pydantic import BaseModel, Field
+
+# ---------------------------------------------------------------------------
+# Task 14: AutoGen Review Stage with Structured Pydantic Verdicts
+# ---------------------------------------------------------------------------
+
+class ReviewVerdict(BaseModel):
+    """Structured verdict model returned by the AutoGen review team."""
+    approved: bool = Field(..., description="True if draft is accurate and compliant.")
+    final_answer: str = Field(..., description="The approved draft or revised output.")
+    reason: str = Field(..., description="Explanation of approval or revision rationale.")
+
+
+class MockAutoGenReviewTeam:
+    """
+    Simulates a 2-agent AutoGen Round Robin Group Chat team (Policy-Compliance-Reviewer 
+    and Final-Editor) returning structured ReviewVerdict outputs.
+    """
+    
+    @classmethod
+    def review_draft(cls, retrieved_context: str, draft_answer: str) -> ReviewVerdict:
+        # Check for ungrounded hallucinated claims in the draft
+        if "guaranteed 24-hour instant cash refund" in draft_answer.lower():
+            return ReviewVerdict(
+                approved=False,
+                final_answer=(
+                    "Nykaa allows returns within 15 days for unopened cosmetics. "
+                    "COD refunds are processed via bank transfer within 5 to 7 business days "
+                    "following quality verification."
+                ),
+                reason="Caught ungrounded claim ('guaranteed 24-hour instant cash refund'). Revised to match policy SLA of 5-7 business days."
+            )
+        
+        return ReviewVerdict(
+            approved=True,
+            final_answer=draft_answer,
+            reason="Draft fully accurate and compliant with retrieved policy documents."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 15: Governance Controls (Least Autonomy, Risk Class, Budget Cap)
+# ---------------------------------------------------------------------------
+
+# 1. Least Autonomy Enforcement Demonstration
+# Tools are assigned strictly per agent responsibility. Wiring 'check_order_status' to non-lookup agents is prohibited.
+ALLOWED_AGENT_TOOLS = {
+    "Retrieval Agent": ["Policy RAG Retrieval Tool"],
+    "Lookup Agent": ["Order Status Lookup Tool"],
+    "Response Composer": []  # Strictly zero tools
+}
+
+def enforce_least_autonomy(agent_role: str, tool_name: str) -> bool:
+    """Guards against agents calling unauthorized tools."""
+    allowed = tool_name in ALLOWED_AGENT_TOOLS.get(agent_role, [])
+    if not allowed:
+        print(f"🚫 [GOVERNANCE BLOCKED]: Agent '{agent_role}' attempted unauthorized call to tool '{tool_name}'.")
+    return allowed
+
+
+# 2. Runtime Token / Cost-Budget Cap
+MAX_REQUEST_TOKEN_CAP = 1000  # Token limit per single request
+
+def process_request_with_budget_cap(query: str, estimated_tokens: int) -> Dict[str, Any]:
+    """Enforces runtime budget cap and rejects oversized requests."""
+    if estimated_tokens > MAX_REQUEST_TOKEN_CAP:
+        return {
+            "status": "REJECTED",
+            "error": f"Request rejected: Estimated tokens ({estimated_tokens}) exceed budget cap ({MAX_REQUEST_TOKEN_CAP})."
+        }
+    return {"status": "ACCEPTED", "message": "Request within token budget limits."}
+
+
+# ---------------------------------------------------------------------------
+# Task 16: Normalized Response Caching
+# ---------------------------------------------------------------------------
+
+class ResponseCache:
+    """In-memory cache keyed by normalized query text."""
+    
+    def __init__(self):
+        self._cache: Dict[str, str] = {}
+        self.call_count: int = 0
+
+    def _normalize(self, query: str) -> str:
+        return " ".join(query.lower().strip().split())
+
+    def get_or_compute(self, query: str) -> Dict[str, Any]:
+        key = hashlib.md5(self._normalize(query).encode("utf-8")).hexdigest()
+        
+        if key in self._cache:
+            return {"hit": True, "response": self._cache[key]}
+        
+        # Simulate LLM/Tool execution overhead
+        self.call_count += 1
+        time.sleep(0.05)
+        response = f"Grounded response for query: '{query}'"
+        self._cache[key] = response
+        
+        return {"hit": False, "response": response}
+
+
+# ---------------------------------------------------------------------------
+# Demonstration & Test Execution
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    print("=== PART 4: RESILIENCE & GOVERNANCE DEMONSTRATIONS ===\n")
+
+    # --- Task 14 Demonstration: AutoGen Review Approval vs. Revision ---
+    print("--- Task 14: AutoGen Review Team Verdicts ---")
+    retrieved_policy = "COD refunds are processed via bank transfer within 5 to 7 business days."
+    
+    # Case 1: Approved Unchanged
+    valid_draft = "Nykaa processes COD refunds via bank transfer in 5 to 7 business days."
+    verdict_1 = MockAutoGenReviewTeam.review_draft(retrieved_policy, valid_draft)
+    print(f"Case 1 (Valid Draft): Approved={verdict_1.approved}")
+    print(f"Reason: {verdict_1.reason}")
+    print(f"Final Answer: {verdict_1.final_answer}\n")
+    
+    # Case 2: Revised Draft (Hallucinated Claim Injected)
+    flawed_draft = "Nykaa offers a guaranteed 24-hour instant cash refund for all COD returns."
+    verdict_2 = MockAutoGenReviewTeam.review_draft(retrieved_policy, flawed_draft)
+    print(f"Case 2 (Flawed Draft): Approved={verdict_2.approved}")
+    print(f"Reason: {verdict_2.reason}")
+    print(f"Final Answer: {verdict_2.final_answer}\n")
+
+    # --- Task 15 Demonstration: Least Autonomy Enforcement ---
+    print("--- Task 15: Least Autonomy Guard ---")
+    enforce_least_autonomy("Response Composer", "Order Status Lookup Tool")
+    enforce_least_autonomy("Lookup Agent", "Order Status Lookup Tool")
+    print()
+
+    # --- Task 15 Demonstration: Runtime Cost-Budget Cap ---
+    print("--- Task 15: Runtime Budget Cap ---")
+    normal_req = process_request_with_budget_cap("What is the return SLA?", estimated_tokens=150)
+    oversized_req = process_request_with_budget_cap("Oversized prompt content...", estimated_tokens=2500)
+    print(f"Normal Request (150 tokens) : {normal_req['status']}")
+    print(f"Oversized Request (2500 tokens): {oversized_req['error']}\n")
+
+    # --- Task 16 Demonstration: Response Caching ---
+    print("--- Task 16: In-Memory Response Caching ---")
+    cache = ResponseCache()
+    sample_query = "What is the return window for cosmetics?"
+
+    # First Call (Cache Miss)
+    t0 = time.time()
+    res1 = cache.get_or_compute(sample_query)
+    t1 = time.time()
+    print(f"Call 1 (Initial) -> Cache Hit: {res1['hit']} | Execution Calls: {cache.call_count} | Time: {(t1 - t0)*1000:.2f} ms")
+
+    # Repeated Call (Cache Hit)
+    t2 = time.time()
+    res2 = cache.get_or_compute("  what IS the return window for cosmetics?  ")  # Tested with whitespace/case variation
+    t3 = time.time()
+    print(f"Call 2 (Repeated) -> Cache Hit: {res2['hit']} | Execution Calls: {cache.call_count} | Time: {(t3 - t2)*1000:.2f} ms")
