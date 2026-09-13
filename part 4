@@ -157,3 +157,4 @@ if __name__ == "__main__":
     res2 = cache.get_or_compute("  what IS the return window for cosmetics?  ")  # Tested with whitespace/case variation
     t3 = time.time()
     print(f"Call 2 (Repeated) -> Cache Hit: {res2['hit']} | Execution Calls: {cache.call_count} | Time: {(t3 - t2)*1000:.2f} ms")
+    
