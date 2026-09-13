@@ -1,0 +1,159 @@
+pip install chromadb
+
+
+Return window by product category = """It refers to the maximum number of days a customer has to return an item, depending on the type of product bought (e.g., clothes vs. electronics).
+-Provides the exact cutoff (e.g., 15 days for Apparel vs. 7 days for Electronics) that the RAG tool retrieves to decide if a customer's order is still eligible for a return."""
+
+
+COD refund timelines = """It means the time taken to get money back after returning an item paid for with Cash on Delivery.
+-Enables the agent to answer questions about when money will reach a customer's bank account after returning an order paid for via Cash on Delivery."""
+
+
+Delivery SLAs = """The promised timeframe within which an order will be delivered.
+-Supplies standard estimated delivery timeframes so the agent can evaluate if an in-transit order is on schedule or overdue."""
+
+
+Reverse-pickup eligibility = """The rules determining whether a courier can come collect a return directly from the customer's home.
+-Helps the agent explain whether a doorstep collection can be arranged based on location or item type, or if self-shipping is required."""
+
+
+Warranty terms by category ="""The specific repair or replacement coverage provided for different types of products.
+-Defines the coverage rules used by the agent to guide customers looking for repairs or replacements for specific items (like beauty appliances)."""
+
+
+Order-cancellation policy = """The rules and timeframes for canceling an order before it gets processed or shipped.
+-Allows the agent to determine if an order can still be canceled based on its current status (e.g., allowed in Placed, but not Shipped)."""
+
+
+Loyalty-points redemption policy = """How earned reward points can be spent or converted into discounts on future purchases.
+-Gives the agent the rules for how reward points (like Nykaa Prive points) can be applied as discounts during checkout."""
+
+
+Payment-failure/retry policy = """What happens when a payment fails, including how auto-refunds are handled and how to safely try paying again.
+-Used by the agent to reassure users when a transaction fails, detailing auto-refund timeframes and how to retry safely."""
+
+
+Size-exchange policy = """The guidelines for swapping an item for a different size instead of taking a full refund.
+-Explains the conditions under which a customer can swap item sizes without initiating a full return/refund cycle."""
+
+
+Damaged-item claim process = """The step-by-step procedure a customer must follow (such as submitting photos) to report and get compensated for receiving a damaged item.
+-Outlines the mandatory steps (such as uploading photo proof within a set timeframe) the agent must instruct the customer to follow when reporting damage."""
+
+
+International shipping restrictions = """Limits on which items can be shipped outside the domestic country, along with extra customs fees or requirements.
+-Provides the agent with rules on non-eligible destinations, custom duties, and restricted item categories for cross-border orders."""
+
+
+Customer-support escalation matrix = """
+-The internal step-by-step hierarchy of who handles customer issues, showing how unresolved complaints get passed up to higher management.
+-Dictates when the agent should route an unresolved issue or a high-risk order (calculated via your Task 6 escalation_score) to human managers."""
+
+
+def chunk_fixed_size(documents: list[dict], chunk_size: int = 200, overlap: int = 50) -> list[dict]:
+    chunks = []
+    step = chunk_size - overlap
+    
+    for doc in documents:
+        doc_id = doc["doc_id"]
+        text = doc["text"]
+        
+        # Slide window over character length
+        for i in range(0, len(text), step):
+            chunk_text = text[i : i + chunk_size]
+            # Avoid trailing tiny overlap fragments
+            if len(chunk_text.strip()) > 0:
+                chunks.append({
+                    "chunk_id": f"{doc_id}_fixed_{len(chunks)}",
+                    "doc_id": doc_id,
+                    "topic": doc["topic"],
+                    "text": chunk_text
+                })
+    return chunks
+
+    import re
+
+def chunk_sentence_based(documents: list[dict], sentences_per_chunk: int = 2) -> list[dict]:
+    chunks = []
+    
+    for doc in documents:
+        doc_id = doc["doc_id"]
+        text = doc["text"]
+        
+        # Split text into sentences using regex
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?]) +', text) if s.strip()]
+        
+        # Group sentences into chunks
+        for i in range(0, len(sentences), sentences_per_chunk):
+            chunk_sentences = sentences[i : i + sentences_per_chunk]
+            chunk_text = " ".join(chunk_sentences)
+            
+            chunks.append({
+                "chunk_id": f"{doc_id}_sent_{len(chunks)}",
+                "doc_id": doc_id,
+                "topic": doc["topic"],
+                "text": chunk_text
+            })
+    return chunks
+
+    # Sample document structure matching Task 2 requirement (2-5 sentences each)
+documents = [
+    {
+        "doc_id": "doc_01",
+        "topic": "return window by product category",
+        "text": "Apparel items can be returned within 15 days of delivery if unworn with original tags attached. Electronics and beauty appliances have a strict 7-day return policy for manufacturing defects. Personal hygiene products and opened cosmetics are non-returnable."
+    },
+    {
+        "doc_id": "doc_02",
+        "topic": "COD refund timelines",
+        "text": "For Cash on Delivery orders, refunds are credited to the customer's verified bank account via NEFT. Once the reverse-pickup item passes quality inspection, bank transfers take 3 to 5 business days to process. Customers must update their bank details in their Nykaa account profile."
+    }
+]
+
+fixed_chunks = chunk_fixed_size(documents, chunk_size=200, overlap=50)
+sentence_chunks = chunk_sentence_based(documents, sentences_per_chunk=2)
+
+print(f"Generated {len(fixed_chunks)} fixed-size chunks.")
+print(f"Generated {len(sentence_chunks)} sentence-based chunks.")
+
+import chromadb
+from sentence_transformers import SentenceTransformer
+
+# 1. Initialize local embedding model and persistent ChromaDB client
+model = SentenceTransformer("all-MiniLM-L6-v2")  # Runs locally, zero API cost
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+
+# 2. Create or get separate collections for each strategy
+collection_fixed = chroma_client.get_or_create_collection(
+    name="nykaa_kb_fixed_size",
+    metadata={"hnsw:space": "cosine"}
+)
+
+collection_sentence = chroma_client.get_or_create_collection(
+    name="nykaa_kb_sentence_based",
+    metadata={"hnsw:space": "cosine"}
+)
+
+def index_chunks(collection, chunks: list[dict]):
+    """Embeds chunk text locally and upserts into the specified ChromaDB collection."""
+    texts = [c["text"] for c in chunks]
+    ids = [c["chunk_id"] for c in chunks]
+    metadatas = [{"doc_id": c["doc_id"], "topic": c["topic"]} for c in chunks]
+    
+    # Generate embeddings locally
+    embeddings = model.encode(texts, convert_to_numpy=True).tolist()
+    
+    # Upsert into ChromaDB
+    collection.upsert(
+        ids=ids,
+        embeddings=embeddings,
+        documents=texts,
+        metadatas=metadatas
+    )
+
+# 3. Index both chunking sets into their respective collections
+index_chunks(collection_fixed, fixed_chunks)
+index_chunks(collection_sentence, sentence_chunks)
+
+print(f"Indexed {collection_fixed.count()} fixed-size chunks in 'nykaa_kb_fixed_size'")
+print(f"Indexed {collection_sentence.count()} sentence-based chunks in 'nykaa_kb_sentence_based'")

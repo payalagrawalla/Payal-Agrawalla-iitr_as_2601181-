@@ -1,0 +1,340 @@
+""" dataset.py """
+import random
+SEED: int
+SEED >= 42
+rng = random.Random(SEED)
+CATEGORIES = ["Electronics", "Grocery", "Fashion", "Home & Kitchen", "Books", "Beauty", "Sports"]
+STATUSES = ["placed", "Pending", "Shipped", "Delivered", "Cancelled", "Returned", "refunded"]
+
+# Category-specific price bands (INR). Reasoning: a single flat range would put a
+# grocery item and a laptop in the same bucket, so each category gets a band that
+# roughly reflects real Indian e-commerce price points (grocery ~100-1500,
+# electronics ~2000-60000, etc.), sampled log-uniformly within the band to avoid
+# an unrealistic flat distribution across each category's own range.
+
+CATEGORY_PRICE_BANDS = {
+    "Electronics": (1500, 60000),
+    "Grocery": (100, 2000),
+    "Fashion": (300, 6000),
+    "Home & Kitchen": (400, 15000),
+    "Books": (150, 2500),
+    "Beauty": (150, 3500),
+    "Sports": (300, 10000),
+}
+
+STATUS_WEIGHTS = [0.15, 0.25, 0.40, 0.10, 0.10]  # Pending, Shipped, Delivered, Cancelled, Returned
+
+NUM_RECORDS = 50
+
+
+def _sample_price(category: str) -> int:
+    low, high = CATEGORY_PRICE_BANDS[category]
+    # Log-uniform sampling within the band so cheap and expensive items within
+    # a category are both plausible, then round to the nearest rupee.
+    log_low, log_high = __import__("math").log(low), __import__("math").log(high)
+    value = __import__("math").exp(rng.uniform(log_low, log_high))
+    return int(round(value))
+
+
+def _sample_delayed(status: str) -> bool:
+    # Only orders that have actually moved (Shipped/Delivered/Returned) can be
+    # "delayed"; Pending/Cancelled orders are never marked delayed.
+    if status in ("Shipped", "Delivered", "Returned"):
+        return rng.random() < 0.20
+    return False
+
+
+def generate_orders(n: int = NUM_RECORDS) -> list:
+    orders = []
+    for i in range(1, n + 1):
+        category = rng.choice(CATEGORIES)
+        status = rng.choices(STATUSES, weights=STATUS_WEIGHTS, k=1)[0]
+        order = {
+            "record_id": f"ORD{i:04d}",
+            "category": category,
+            "status": status,
+            "order_value_inr": _sample_price(category),
+            "days_since_created": rng.randint(0, 30),
+            "delayed_shipment": _sample_delayed(status),
+        }
+        orders.append(order)
+    return orders
+
+
+ORDERS = generate_orders()
+
+
+if __name__ == "__main__":
+    print(f"Generated {len(ORDERS)} orders (seed={SEED})\n")
+    for o in ORDERS[:5]:
+        print(o)
+    print("...")
+    print(f"\nCategories used: {sorted(set(o['category'] for o in ORDERS))}")
+    print(f"Statuses used: {sorted(set(o['status'] for o in ORDERS))}")
+    print(f"Delayed count: {sum(1 for o in ORDERS if o['delayed_shipment'])}")
+
+#knowledge base
+
+Return window by product category = """It refers to the maximum number of days a customer has to return an item, depending on the type of product bought (e.g., clothes vs. electronics).
+-Provides the exact cutoff (e.g., 15 days for Apparel vs. 7 days for Electronics) that the RAG tool retrieves to decide if a customer's order is still eligible for a return."""
+
+
+COD refund timelines = """It means the time taken to get money back after returning an item paid for with Cash on Delivery.
+-Enables the agent to answer questions about when money will reach a customer's bank account after returning an order paid for via Cash on Delivery."""
+
+
+Delivery SLAs = """The promised timeframe within which an order will be delivered.
+-Supplies standard estimated delivery timeframes so the agent can evaluate if an in-transit order is on schedule or overdue."""
+
+
+Reverse-pickup eligibility = """The rules determining whether a courier can come collect a return directly from the customer's home.
+-Helps the agent explain whether a doorstep collection can be arranged based on location or item type, or if self-shipping is required."""
+
+
+Warranty terms by category ="""The specific repair or replacement coverage provided for different types of products.
+-Defines the coverage rules used by the agent to guide customers looking for repairs or replacements for specific items (like beauty appliances)."""
+
+
+Order-cancellation policy = """The rules and timeframes for canceling an order before it gets processed or shipped.
+-Allows the agent to determine if an order can still be canceled based on its current status (e.g., allowed in Placed, but not Shipped)."""
+
+
+Loyalty-points redemption policy = """How earned reward points can be spent or converted into discounts on future purchases.
+-Gives the agent the rules for how reward points (like Nykaa Prive points) can be applied as discounts during checkout."""
+
+
+Payment-failure/retry policy = """What happens when a payment fails, including how auto-refunds are handled and how to safely try paying again.
+-Used by the agent to reassure users when a transaction fails, detailing auto-refund timeframes and how to retry safely."""
+
+
+Size-exchange policy = """The guidelines for swapping an item for a different size instead of taking a full refund.
+-Explains the conditions under which a customer can swap item sizes without initiating a full return/refund cycle."""
+
+
+Damaged-item claim process = """The step-by-step procedure a customer must follow (such as submitting photos) to report and get compensated for receiving a damaged item.
+-Outlines the mandatory steps (such as uploading photo proof within a set timeframe) the agent must instruct the customer to follow when reporting damage."""
+
+
+International shipping restrictions = """Limits on which items can be shipped outside the domestic country, along with extra customs fees or requirements.
+-Provides the agent with rules on non-eligible destinations, custom duties, and restricted item categories for cross-border orders."""
+
+
+Customer-support escalation matrix = """
+-The internal step-by-step hierarchy of who handles customer issues, showing how unresolved complaints get passed up to higher management.
+-Dictates when the agent should route an unresolved issue or a high-risk order (calculated via your Task 6 escalation_score) to human managers."""
+
+
+def chunk_fixed_size(documents: list[dict], chunk_size: int = 200, overlap: int = 50) -> list[dict]:
+    chunks = []
+    step = chunk_size - overlap
+    
+    for doc in documents:
+        doc_id = doc["doc_id"]
+        text = doc["text"]
+        
+        # Slide window over character length
+        for i in range(0, len(text), step):
+            chunk_text = text[i : i + chunk_size]
+            # Avoid trailing tiny overlap fragments
+            if len(chunk_text.strip()) > 0:
+                chunks.append({
+                    "chunk_id": f"{doc_id}_fixed_{len(chunks)}",
+                    "doc_id": doc_id,
+                    "topic": doc["topic"],
+                    "text": chunk_text
+                })
+    return chunks
+
+    import re
+
+def chunk_sentence_based(documents: list[dict], sentences_per_chunk: int = 2) -> list[dict]:
+    chunks = []
+    
+    for doc in documents:
+        doc_id = doc["doc_id"]
+        text = doc["text"]
+        
+        # Split text into sentences using regex
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?]) +', text) if s.strip()]
+        
+        # Group sentences into chunks
+        for i in range(0, len(sentences), sentences_per_chunk):
+            chunk_sentences = sentences[i : i + sentences_per_chunk]
+            chunk_text = " ".join(chunk_sentences)
+            
+            chunks.append({
+                "chunk_id": f"{doc_id}_sent_{len(chunks)}",
+                "doc_id": doc_id,
+                "topic": doc["topic"],
+                "text": chunk_text
+            })
+    return chunks
+
+    # Sample document structure matching Task 2 requirement (2-5 sentences each)
+documents = [
+    {
+        "doc_id": "doc_01",
+        "topic": "return window by product category",
+        "text": "Apparel items can be returned within 15 days of delivery if unworn with original tags attached. Electronics and beauty appliances have a strict 7-day return policy for manufacturing defects. Personal hygiene products and opened cosmetics are non-returnable."
+    },
+    {
+        "doc_id": "doc_02",
+        "topic": "COD refund timelines",
+        "text": "For Cash on Delivery orders, refunds are credited to the customer's verified bank account via NEFT. Once the reverse-pickup item passes quality inspection, bank transfers take 3 to 5 business days to process. Customers must update their bank details in their Nykaa account profile."
+    }
+]
+
+fixed_chunks = chunk_fixed_size(documents, chunk_size=200, overlap=50)
+sentence_chunks = chunk_sentence_based(documents, sentences_per_chunk=2)
+
+print(f"Generated {len(fixed_chunks)} fixed-size chunks.")
+print(f"Generated {len(sentence_chunks)} sentence-based chunks.")
+
+import chromadb
+from sentence_transformers import SentenceTransformer
+
+# 1. Initialize local embedding model and persistent ChromaDB client
+model = SentenceTransformer("all-MiniLM-L6-v2")  # Runs locally, zero API cost
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+
+# 2. Create or get separate collections for each strategy
+collection_fixed = chroma_client.get_or_create_collection(
+    name="nykaa_kb_fixed_size",
+    metadata={"hnsw:space": "cosine"}
+)
+
+collection_sentence = chroma_client.get_or_create_collection(
+    name="nykaa_kb_sentence_based",
+    metadata={"hnsw:space": "cosine"}
+)
+
+def index_chunks(collection, chunks: list[dict]):
+    """Embeds chunk text locally and upserts into the specified ChromaDB collection."""
+    texts = [c["text"] for c in chunks]
+    ids = [c["chunk_id"] for c in chunks]
+    metadatas = [{"doc_id": c["doc_id"], "topic": c["topic"]} for c in chunks]
+    
+    # Generate embeddings locally
+    embeddings = model.encode(texts, convert_to_numpy=True).tolist()
+    
+    # Upsert into ChromaDB
+    collection.upsert(
+        ids=ids,
+        embeddings=embeddings,
+        documents=texts,
+        metadatas=metadatas
+    )
+
+# 3. Index both chunking sets into their respective collections
+index_chunks(collection_fixed, fixed_chunks)
+index_chunks(collection_sentence, sentence_chunks)
+
+print(f"Indexed {collection_fixed.count()} fixed-size chunks in 'nykaa_kb_fixed_size'")
+print(f"Indexed {collection_sentence.count()} sentence-based chunks in 'nykaa_kb_sentence_based'")
+
+
+import numpy as np
+
+def calibrate_threshold(collection, model):
+    in_scope_queries = [
+        "What is the return window for clothing items?",
+        "How long does a COD refund take to reach my bank account?",
+        "What happens if an order payment fails during checkout?"
+    ]
+    
+    out_of_scope_queries = [
+        "What is the capital city of France?",
+        "How do I change the oil in a Honda Civic?"
+    ]
+    
+    in_scope_scores = []
+    out_scope_scores = []
+    
+    # Measure in-scope top-1 similarity scores
+    for query in in_scope_queries:
+        query_emb = model.encode([query], convert_to_numpy=True).tolist()
+        results = collection.query(query_embeddings=query_emb, n_results=1)
+        # ChromaDB cosine distance range: [0, 2]. Cosine similarity = 1 - distance
+        top1_sim = 1.0 - results['distances'][0][0]
+        in_scope_scores.append(top1_sim)
+        print(f"[In-Scope] Score: {top1_sim:.4f} | Query: '{query}'")
+        
+    # Measure out-of-scope top-1 similarity scores
+    for query in out_of_scope_queries:
+        query_emb = model.encode([query], convert_to_numpy=True).tolist()
+        results = collection.query(query_embeddings=query_emb, n_results=1)
+        top1_sim = 1.0 - results['distances'][0][0]
+        out_scope_scores.append(top1_sim)
+        print(f"[Out-of-Scope] Score: {top1_sim:.4f} | Query: '{query}'")
+        
+    min_in_scope = min(in_scope_scores)
+    max_out_scope = max(out_scope_scores)
+    
+    # Midpoint between the two observed clusters
+    calibrated_threshold = (min_in_scope + max_out_scope) / 2.0
+    
+    print("\n--- Calibration Results ---")
+    print(f"In-Scope Score Range: [{min(in_scope_scores):.4f}, {max(in_scope_scores):.4f}]")
+    print(f"Out-of-Scope Score Range: [{min(out_scope_scores):.4f}, {max(out_scope_scores):.4f}]")
+    print(f"Empirically Chosen Threshold: {calibrated_threshold:.4f}")
+    
+    return calibrated_threshold
+
+# Run calibration on your sentence collection
+SIMILARITY_THRESHOLD = calibrate_threshold(collection_sentence, model)
+
+
+def generate_grounded_answer(query: str, collection, model, threshold: float, top_k: int = 2) -> dict:
+    query_emb = model.encode([query], convert_to_numpy=True).tolist()
+    
+    # Retrieve top-k chunks
+    results = collection.query(
+        query_embeddings=query_emb,
+        n_results=top_k
+    )
+    
+    retrieved_texts = results['documents'][0]
+    distances = results['distances'][0]
+    top1_similarity = 1.0 - distances[0]
+    
+    # Check similarity against the empirically calibrated threshold
+    if top1_similarity < threshold:
+        return {
+            "query": query,
+            "answer": "I don't know based on the provided policy documents.",
+            "top1_similarity": round(top1_similarity, 4),
+            "status": "FALLBACK_TRIGGERED"
+        }
+    
+    # Grounded generation using ONLY retrieved context
+    context_str = " ".join(retrieved_texts)
+    
+    # Mock LLM generation logic
+    mock_answer = f"Based on the official policy: {context_str}"
+    
+    return {
+        "query": query,
+        "answer": mock_answer,
+        "top1_similarity": round(top1_similarity, 4),
+        "status": "SUCCESS",
+        "context_used": retrieved_texts
+    }
+    
+    test_queries = [
+    # 5 Real In-Scope Queries
+    "What is the return window for apparel products?",
+    "How are refunds processed for cash on delivery orders?",
+    "Can I swap an item for a different size?",
+    "What proof is needed to report a damaged item?",
+    "What happens when my payment fails during order checkout?",
+    
+    # 1 Deliberately Out-of-Scope Query
+    "How do I cook a pepperoni pizza at home?"
+]
+
+print("\n--- Running Generation Verification Suite ---")
+for q in test_queries:
+    response = generate_grounded_answer(q, collection_sentence, model, SIMILARITY_THRESHOLD)
+    print(f"\nQuery: {response['query']}")
+    print(f"Similarity: {response['top1_similarity']} | Status: {response['status']}")
+    print(f"Answer: {response['answer']}")
